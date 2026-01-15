@@ -1,8 +1,5 @@
 import {
-    BoxGeometry,
     LoadingManager,
-    Mesh,
-    MeshLambertMaterial,
     PCFSoftShadowMap,
     WebGLRenderer,
 } from 'three';
@@ -12,6 +9,7 @@ import { addLights } from './addLights';
 import { addHelpers } from './addHelpers';
 import { getScene } from './getScene';
 import { ProjectCamera } from './ProjectCamera';
+import { GLTFLoader } from 'three/examples/jsm/Addons.js';
 
 const canvas = document.createElement('canvas');
 document.body.appendChild(canvas);
@@ -21,18 +19,18 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = PCFSoftShadowMap;
 const scene = getScene();
 
-const loadingManager = new LoadingManager(console.log, console.log, console.error)
+const loadingManager = new LoadingManager(
+    console.log,
+    (_url, loaded, total) => console.log(`Loading ${loaded} / ${total}`),
+    console.error,
+);
+const loader = new GLTFLoader(loadingManager);
 
 addLights();
 
-// Dummy Object
-// TODO remove this object
-scene.add(
-    new Mesh(
-        new BoxGeometry(1, 1, 1),
-        new MeshLambertMaterial({ color: 'white' }),
-    ),
-);
+loader.load('/models/lowpoly1.gltf', (gltf) => {
+    scene.add(gltf.scene);
+});
 
 const camera = new ProjectCamera(canvas);
 scene.add(camera.instance);

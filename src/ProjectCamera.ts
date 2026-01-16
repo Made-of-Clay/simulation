@@ -44,6 +44,12 @@ export class ProjectCamera {
             this.instance.updateProjectionMatrix();
         };
 
-        this.#cameraControls.update();
+        if (this.#cameraControls.enabled) {
+            this.#cameraControls.update();
+        }
+    }
+
+    setControlsEnabled(enabled: boolean) {
+        this.#cameraControls.enabled = enabled;
     }
 }

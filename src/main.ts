@@ -1,4 +1,5 @@
 import {
+    Clock,
     LoadingManager,
     PCFSoftShadowMap,
     WebGLRenderer,
@@ -7,6 +8,7 @@ import Stats from 'stats.js';
 import './style.css';
 import { addLights } from './addLights';
 import { addHelpers } from './addHelpers';
+import { setupNavigation } from './antigravity/navigation';
 import { getScene } from './getScene';
 import { ProjectCamera } from './ProjectCamera';
 import { GLTFLoader } from 'three/examples/jsm/Addons.js';
@@ -28,8 +30,20 @@ const loader = new GLTFLoader(loadingManager);
 
 addLights();
 
+let navigationUpdate: ((delta: number) => void) | undefined;
+const clock = new Clock();
+
 loader.load('/models/lowpoly1.gltf', (gltf) => {
     scene.add(gltf.scene);
+    // Initialize the Antigravity navigation agent for the loaded environment.
+    // This wires the BVH-based helpers (three-mesh-bvh) into the runtime.
+    try {
+        navigationUpdate = setupNavigation(scene, gltf.scene, camera.instance);
+        // Disable OrbitControls to let the agent control the camera
+        camera.setControlsEnabled(false);
+    } catch (e) {
+        console.warn('Failed to setup Antigravity navigation:', e);
+    }
 });
 
 const camera = new ProjectCamera(canvas);
@@ -45,6 +59,11 @@ function tick() {
     requestAnimationFrame(tick);
 
     stats.begin();
+
+    const delta = clock.getDelta();
+    if (navigationUpdate) {
+        navigationUpdate(delta);
+    }
 
     camera.tick(renderer);
 

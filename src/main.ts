@@ -28,13 +28,21 @@ const loadingManager = new LoadingManager(
 );
 const loader = new GLTFLoader(loadingManager);
 
-addLights();
+const fireplaceUpdate = addLights();
 
 let navigationUpdate: ((delta: number) => void) | undefined;
 const clock = new Clock();
 
-loader.load('/models/lowpoly1.gltf', (gltf) => {
+// loader.load('/models/lowpoly1.gltf', (gltf) => {
+loader.load('/scene.gltf', (gltf) => {
     scene.add(gltf.scene);
+    gltf.scene.traverse((child) => {
+        if (child.name === 'Object_13') {
+            console.log(child)
+            child.castShadow = true; // fireplace
+            child.receiveShadow = true;
+        }
+    });
     // Initialize the Antigravity navigation agent for the loaded environment.
     // This wires the BVH-based helpers (three-mesh-bvh) into the runtime.
     try {
@@ -63,6 +71,9 @@ function tick() {
     const delta = clock.getDelta();
     if (navigationUpdate) {
         navigationUpdate(delta);
+    }
+    if (fireplaceUpdate) {
+        fireplaceUpdate(delta);
     }
 
     camera.tick(renderer);

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 // Patch the raycast implementation for accelerated queries. This mirrors the
 // setup used in the three-mesh-bvh examples.
@@ -18,10 +19,8 @@ export class Agent {
     mesh?: THREE.Mesh;
     collider: THREE.Mesh;
     velocity = new THREE.Vector3();
-    onFloor = false;
 
     // Configuration
-    gravity = -30;
     playerSpeed = 10;
     physicsSteps = 5;
 
@@ -29,8 +28,6 @@ export class Agent {
     private tempVector = new THREE.Vector3();
     private tempVector2 = new THREE.Vector3();
     private tempBox = new THREE.Box3();
-    private tempMat = new THREE.Matrix4();
-    private tempSegment = new THREE.Line3();
 
     constructor(root: THREE.Object3D) {
         this.root = root;
@@ -41,29 +38,47 @@ export class Agent {
         this.collider = new THREE.Mesh(geometry, material);
         // Position it nicely above ground
         this.collider.geometry.translate(0, 0.75 + 0.35, 0);
-        this.collider.position.set(0, 5, 0); // Start high to avoid falling through buffer logic
+        this.collider.position.set(0, 3, 0); // Start high to avoid falling through buffer logic
     }
 
-    private findFirstMesh(): THREE.Mesh | undefined {
-        let found: THREE.Mesh | undefined;
-        this.root.traverse((child) => {
-            if ((child as THREE.Mesh).isMesh && !found) found = child as THREE.Mesh;
-        });
-        return found;
-    }
+
 
     initBVH() {
-        this.mesh = this.findFirstMesh();
-        if (!this.mesh) {
-            console.warn('Antigravity Agent: no mesh found to build BVH from');
+        const geometries: THREE.BufferGeometry[] = [];
+        this.root.updateMatrixWorld(true);
+
+        this.root.traverse((child) => {
+            const mesh = child as THREE.Mesh;
+            if (mesh.isMesh) {
+                // Ignore the agent's own collider if it accidentally got into the root (unlikely but safe)
+                if (mesh === this.collider) return;
+
+                const clonedGeom = mesh.geometry.clone();
+                // Bake world transform into geometry so we have a single world-space collider
+                clonedGeom.applyMatrix4(mesh.matrixWorld);
+                for (const key in clonedGeom.attributes) {
+                    if (key !== 'position' && key !== 'index') {
+                        clonedGeom.deleteAttribute(key);
+                    }
+                }
+                geometries.push(clonedGeom);
+            }
+        });
+
+        if (geometries.length === 0) {
+            console.warn('Antigravity Agent: no meshes found to build BVH from');
             return;
         }
 
-        const geom: any = this.mesh.geometry;
-        if (!geom.boundsTree) {
-            // Build BVH and attach as `boundsTree` on geometry (convention used by the library)
-            geom.boundsTree = new MeshBVH(geom, { lazyGeneration: false });
+        const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries);
+        if (!mergedGeometry) {
+            console.warn('Antigravity Agent: failed to merge geometries');
+            return;
         }
+
+        (mergedGeometry as any).boundsTree = new MeshBVH(mergedGeometry, { lazyGeneration: false });
+        // Create a standalone mesh for the collider, not added to scene, just for data
+        this.mesh = new THREE.Mesh(mergedGeometry);
     }
 
     update(delta: number, playerDirection: THREE.Vector3) {
@@ -72,105 +87,31 @@ export class Agent {
         const collider = this.collider;
         const bvhMesh = this.mesh;
 
-        // 1. Apple gravity
-        this.velocity.y += this.onFloor ? 0 : delta * this.gravity;
-
-        // 2. Apply player input acceleration
+        // 1. Apply player input acceleration
         // (For simplicity we set velocity directly from input, but could integrate acceleration)
         this.velocity.x = playerDirection.x * this.playerSpeed;
         this.velocity.z = playerDirection.z * this.playerSpeed;
+        // Ensure vertical velocity is zeroed if we want strictly horizontal movement from input, 
+        // though it was only gravity affecting it before.
+        this.velocity.y = 0;
 
-        // 3. Move the collider
+        // 2. Move the collider
         collider.position.addScaledVector(this.velocity, delta);
 
-        // 4. Collision Detection
-        this.onFloor = false;
+        // 3. Collision Detection
+        // Use the simplified shapecast loop update call if needed or just rely on the above loop.
+        // We merged logic into update() main loop for clarity based on previous file structure.
+        // Actually, the previous file had a separate updateCollision() calls. 
+        // Let's keep using updateCollision() or just inline it properly.
+        // The previous code had BOTH a big loop with shapecast AND a call to this.updateCollision().
+        // That seemed redundant. Let's clean it up to use just one robust collision pass.
+        // I will delegate to updateCollision logic for the single source of truth and remove the redundant loop in 3.
 
-        // Perform multiple steps for stability
-        for (let i = 0; i < this.physicsSteps; i++) {
-            // @ts-ignore
-            if (!bvhMesh.geometry.boundsTree) continue;
-
-            this.tempBox.makeEmpty();
-            this.tempMat.copy(collider.matrixWorld).invert();
-            this.tempSegment.copy(this.tempSegment);
-
-            // Get the collider's capsule structure
-            // We can use the bvh shapecast to find intersections
-            // @ts-ignore
-            bvhMesh.geometry.boundsTree.shapecast({
-
-                intersectsBounds: (box: THREE.Box3) => {
-                    const bounds = box;
-                    // Check if capsule bounds intersect node bounds
-                    // This is a simplified check, ideally transform capsule to local space of bvh
-                    // For now, simpler approach: use standard THREE raycasting or just treat environment as static world
-                    // The standard three-mesh-bvh 'characterMovement' example uses a more robust shapecast.
-                    // Let's implement that simplified:
-                    return box.intersectsBox(this.tempBox.setFromObject(collider));
-                },
-
-                intersectsTriangle: (tri: any) => {
-                    // Update triangle to world space
-                    tri.a.applyMatrix4(bvhMesh.matrixWorld);
-                    tri.b.applyMatrix4(bvhMesh.matrixWorld);
-                    tri.c.applyMatrix4(bvhMesh.matrixWorld);
-
-                    // Check intersection with capsule
-                    const separation = new THREE.Vector3();
-                    const start = this.tempVector.set(0, 0, 0);
-                    const end = this.tempVector2.set(0, 0, 0);
-                    // Helper to get capsule ends
-                    this.getColliderEnds(collider, start, end);
-
-                    const closestPoint = new THREE.Vector3();
-                    tri.closestPointToSegment(new THREE.Line3(start, end), closestPoint);
-
-                    // Sphere check at closest point
-                    const radius = 0.35; // Matches capsule radius
-                    const dist = closestPoint.distanceToSquared(collider.position); // This is approximate, really need distance to segment
-                    // Better approach: use the library example's logic which is robust.
-
-                    // RE-IMPLEMENTING with the standard shapecast logic pattern for robustness:
-                    const triPoint = new THREE.Vector3();
-                    const capsulePoint = new THREE.Vector3();
-                    const distance = tri.closestPointToSegment(new THREE.Line3(start, end), triPoint, capsulePoint);
-                    if (distance < radius) {
-                        const depth = radius - distance;
-                        const direction = capsulePoint.sub(triPoint).normalize();
-                        this.tempSegment.set(0, 0, 0);
-                        this.tempSegment.start.copy(direction).multiplyScalar(depth);
-
-                        // Move collider out
-                        collider.position.add(this.tempSegment.start);
-
-                        // Check if this was a floor collision
-                        if (direction.y > 0.5) {
-                            this.onFloor = true;
-                            this.velocity.y = Math.max(0, this.velocity.y);
-                        }
-                    }
-                }
-            });
-        }
-
-        // Refined collision using the robust method:
-        // Since we are writing this from scratch based on the prompt, let's substitute the complex manual shapecast 
-        // with the 'computeBoundsTree' result usage if simpler, but shapecast is the recommended way.
-        // Let's do a simplified approach: just ensure we don't fall through floor for now if complex physics is too much code.
-        // Actually, let's use the provided logic in the official example which is concise.
-
-        this.updateCollision(delta, bvhMesh);
+        this.updateCollision(bvhMesh);
     }
 
     // Helper to extract capsule segment world positions
     private getColliderEnds(collider: THREE.Mesh, start: THREE.Vector3, end: THREE.Vector3) {
-        // geometry is centered, so ends are at +height/2 and -height/2 along Y, minus radius caps
-        // Total height 1.5 + 2*radius (0.35) = 2.2 ?? Or is CapsuleGeometry arguments radius, length?
-        // ThreeJS CapsuleGeometry(radius, length). Total height is length + 2*radius.
-        // We used radius=0.35, length=1.5. Total height = 2.2.
-        // The cylinder part is length 1.5.
-        // Local Y axis.
         start.set(0, -1.5 / 2, 0);
         end.set(0, 1.5 / 2, 0);
 
@@ -178,60 +119,58 @@ export class Agent {
         end.applyMatrix4(collider.matrixWorld);
     }
 
-    private updateCollision(delta: number, bvhMesh: THREE.Mesh) {
+    private updateCollision(bvhMesh: THREE.Mesh) {
         // @ts-ignore
         const bvh = bvhMesh.geometry.boundsTree;
         if (!bvh) return;
 
         const collider = this.collider;
         const radius = 0.35;
-        const segmentLen = 1.5;
 
-        this.tempBox.makeEmpty();
-        this.tempBox.expandByObject(collider);
-        // Add a small margin for movement
-        this.tempBox.min.addScalar(-0.1);
-        this.tempBox.max.addScalar(0.1);
+        // We can do multiple micro-steps if delta is large, but for now simple single pass
+        // or the 5 steps defined in physicsSteps.
+        const steps = this.physicsSteps;
 
-        bvh.shapecast({
-            intersectsBounds: (box: THREE.Box3) => {
-                return box.intersectsBox(this.tempBox);
-            },
-            intersectsTriangle: (tri: any) => {
-                // Apply mesh world matrix to triangle
-                tri.a.applyMatrix4(bvhMesh.matrixWorld);
-                tri.b.applyMatrix4(bvhMesh.matrixWorld);
-                tri.c.applyMatrix4(bvhMesh.matrixWorld);
+        for (let i = 0; i < steps; i++) {
+            this.tempBox.makeEmpty();
+            this.tempBox.expandByObject(collider);
+            this.tempBox.min.addScalar(-0.1);
+            this.tempBox.max.addScalar(0.1);
 
-                // Get capsule segment in world space
-                const start = this.tempVector;
-                const end = this.tempVector2;
-                this.getColliderEnds(collider, start, end);
-                const segment = new THREE.Line3(start, end);
+            bvh.shapecast({
+                intersectsBounds: (box: THREE.Box3) => {
+                    return box.intersectsBox(this.tempBox);
+                },
+                intersectsTriangle: (tri: any) => {
+                    tri.a.applyMatrix4(bvhMesh.matrixWorld);
+                    tri.b.applyMatrix4(bvhMesh.matrixWorld);
+                    tri.c.applyMatrix4(bvhMesh.matrixWorld);
 
-                const triPoint = new THREE.Vector3();
-                const capsPoint = new THREE.Vector3();
+                    const start = this.tempVector;
+                    const end = this.tempVector2;
+                    this.getColliderEnds(collider, start, end);
+                    const segment = new THREE.Line3(start, end);
 
-                const distance = tri.closestPointToSegment(segment, triPoint, capsPoint);
-                if (distance < radius) {
-                    const depth = radius - distance;
-                    const direction = capsPoint.sub(triPoint).normalize();
+                    const triPoint = new THREE.Vector3();
+                    const capsPoint = new THREE.Vector3();
 
-                    collider.position.addScaledVector(direction, depth);
+                    const distance = tri.closestPointToSegment(segment, triPoint, capsPoint);
+                    if (distance < radius) {
+                        const depth = radius - distance;
+                        const direction = capsPoint.sub(triPoint).normalize();
 
-                    if (direction.y > 0.5) {
-                        this.onFloor = true;
-                        this.velocity.y = Math.max(0, this.velocity.y);
+                        // User requested to re-add floor push-back and fix sinking issues.
+                        // We strictly disallow downward pushback to prevent "sinking" when hitting slightly angled walls.
+                        if (direction.y < 0) {
+                            direction.y = 0;
+                            direction.normalize();
+                        }
+
+                        // Reduce pushback to half as requested
+                        collider.position.addScaledVector(direction, depth * 0.5);
                     }
                 }
-            }
-        });
-    }
-
-    jump() {
-        if (this.onFloor) {
-            this.velocity.y = 10;
-            this.onFloor = false;
+            });
         }
     }
 }

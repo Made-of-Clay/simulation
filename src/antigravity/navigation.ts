@@ -14,7 +14,6 @@ export function setupNavigation(scene: THREE.Scene, model: THREE.Object3D, camer
         backward: false,
         left: false,
         right: false,
-        jump: false,
     };
 
     window.addEventListener('keydown', (e) => {
@@ -23,10 +22,6 @@ export function setupNavigation(scene: THREE.Scene, model: THREE.Object3D, camer
             case 'KeyS': keys.backward = true; break;
             case 'KeyA': keys.left = true; break;
             case 'KeyD': keys.right = true; break;
-            case 'Space':
-                if (!keys.jump) agent.jump();
-                keys.jump = true;
-                break;
         }
     });
 
@@ -36,7 +31,6 @@ export function setupNavigation(scene: THREE.Scene, model: THREE.Object3D, camer
             case 'KeyS': keys.backward = false; break;
             case 'KeyA': keys.left = false; break;
             case 'KeyD': keys.right = false; break;
-            case 'Space': keys.jump = false; break;
         }
     });
 
